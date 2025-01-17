@@ -1,16 +1,16 @@
-// File generated from our OpenAPI spec by Stainless.
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 
 import OpenAI from 'openai';
 import { Response } from 'node-fetch';
 
-const openai = new OpenAI({
+const client = new OpenAI({
   apiKey: 'My API Key',
   baseURL: process.env['TEST_API_BASE_URL'] ?? 'http://127.0.0.1:4010',
 });
 
 describe('resource completions', () => {
   test('create: only required params', async () => {
-    const responsePromise = openai.completions.create({ model: 'string', prompt: 'This is a test.' });
+    const responsePromise = client.completions.create({ model: 'string', prompt: 'This is a test.' });
     const rawResponse = await responsePromise.asResponse();
     expect(rawResponse).toBeInstanceOf(Response);
     const response = await responsePromise;
@@ -21,7 +21,7 @@ describe('resource completions', () => {
   });
 
   test('create: required and optional params', async () => {
-    const response = await openai.completions.create({
+    const response = await client.completions.create({
       model: 'string',
       prompt: 'This is a test.',
       best_of: 0,
@@ -32,9 +32,10 @@ describe('resource completions', () => {
       max_tokens: 16,
       n: 1,
       presence_penalty: -2,
-      seed: -9223372036854776000,
+      seed: -9007199254740991,
       stop: '\n',
       stream: false,
+      stream_options: { include_usage: true },
       suffix: 'test.',
       temperature: 1,
       top_p: 1,

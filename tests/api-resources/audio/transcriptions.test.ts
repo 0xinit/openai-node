@@ -1,16 +1,16 @@
-// File generated from our OpenAPI spec by Stainless.
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 
 import OpenAI, { toFile } from 'openai';
 import { Response } from 'node-fetch';
 
-const openai = new OpenAI({
+const client = new OpenAI({
   apiKey: 'My API Key',
   baseURL: process.env['TEST_API_BASE_URL'] ?? 'http://127.0.0.1:4010',
 });
 
 describe('resource transcriptions', () => {
   test('create: only required params', async () => {
-    const responsePromise = openai.audio.transcriptions.create({
+    const responsePromise = client.audio.transcriptions.create({
       file: await toFile(Buffer.from('# my file contents'), 'README.md'),
       model: 'whisper-1',
     });
@@ -24,14 +24,14 @@ describe('resource transcriptions', () => {
   });
 
   test('create: required and optional params', async () => {
-    const response = await openai.audio.transcriptions.create({
+    const response = await client.audio.transcriptions.create({
       file: await toFile(Buffer.from('# my file contents'), 'README.md'),
       model: 'whisper-1',
-      language: 'string',
-      prompt: 'string',
+      language: 'language',
+      prompt: 'prompt',
       response_format: 'json',
       temperature: 0,
-      timestamp_granularities: ['word', 'segment'],
+      timestamp_granularities: ['word'],
     });
   });
 });

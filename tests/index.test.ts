@@ -1,8 +1,8 @@
-// File generated from our OpenAPI spec by Stainless.
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 
 import OpenAI from 'openai';
 import { APIUserAbortError } from 'openai';
-import { Headers } from 'openai/core';
+import { debug, Headers } from 'openai/core';
 import defaultFetch, { Response, type RequestInit, type RequestInfo } from 'node-fetch';
 
 describe('instantiate client', () => {
@@ -122,6 +122,19 @@ describe('instantiate client', () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  test('normalized method', async () => {
+    let capturedRequest: RequestInit | undefined;
+    const testFetch = async (url: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+      capturedRequest = init;
+      return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const client = new OpenAI({ baseURL: 'http://localhost:5000/', apiKey: 'My API Key', fetch: testFetch });
+
+    await client.patch('/foo');
+    expect(capturedRequest?.method).toEqual('PATCH');
+  });
+
   describe('baseUrl', () => {
     test('trailing slash', () => {
       const client = new OpenAI({ baseURL: 'http://localhost:5000/custom/path/', apiKey: 'My API Key' });
@@ -177,7 +190,7 @@ describe('instantiate client', () => {
     expect(client.apiKey).toBe('My API Key');
   });
 
-  test('with overriden environment variable arguments', () => {
+  test('with overridden environment variable arguments', () => {
     // set options via env var
     process.env['OPENAI_API_KEY'] = 'another My API Key';
     const client = new OpenAI({ apiKey: 'My API Key' });
@@ -241,6 +254,122 @@ describe('retries', () => {
     expect(count).toEqual(3);
   });
 
+  test('retry count header', async () => {
+    let count = 0;
+    let capturedRequest: RequestInit | undefined;
+    const testFetch = async (url: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+      count++;
+      if (count <= 2) {
+        return new Response(undefined, {
+          status: 429,
+          headers: {
+            'Retry-After': '0.1',
+          },
+        });
+      }
+      capturedRequest = init;
+      return new Response(JSON.stringify({ a: 1 }), { headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const client = new OpenAI({ apiKey: 'My API Key', fetch: testFetch, maxRetries: 4 });
+
+    expect(await client.request({ path: '/foo', method: 'get' })).toEqual({ a: 1 });
+
+    expect((capturedRequest!.headers as Headers)['x-stainless-retry-count']).toEqual('2');
+    expect(count).toEqual(3);
+  });
+
+  test('omit retry count header', async () => {
+    let count = 0;
+    let capturedRequest: RequestInit | undefined;
+    const testFetch = async (url: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+      count++;
+      if (count <= 2) {
+        return new Response(undefined, {
+          status: 429,
+          headers: {
+            'Retry-After': '0.1',
+          },
+        });
+      }
+      capturedRequest = init;
+      return new Response(JSON.stringify({ a: 1 }), { headers: { 'Content-Type': 'application/json' } });
+    };
+    const client = new OpenAI({ apiKey: 'My API Key', fetch: testFetch, maxRetries: 4 });
+
+    expect(
+      await client.request({
+        path: '/foo',
+        method: 'get',
+        headers: { 'X-Stainless-Retry-Count': null },
+      }),
+    ).toEqual({ a: 1 });
+
+    expect(capturedRequest!.headers as Headers).not.toHaveProperty('x-stainless-retry-count');
+  });
+
+  test('omit retry count header by default', async () => {
+    let count = 0;
+    let capturedRequest: RequestInit | undefined;
+    const testFetch = async (url: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+      count++;
+      if (count <= 2) {
+        return new Response(undefined, {
+          status: 429,
+          headers: {
+            'Retry-After': '0.1',
+          },
+        });
+      }
+      capturedRequest = init;
+      return new Response(JSON.stringify({ a: 1 }), { headers: { 'Content-Type': 'application/json' } });
+    };
+    const client = new OpenAI({
+      apiKey: 'My API Key',
+      fetch: testFetch,
+      maxRetries: 4,
+      defaultHeaders: { 'X-Stainless-Retry-Count': null },
+    });
+
+    expect(
+      await client.request({
+        path: '/foo',
+        method: 'get',
+      }),
+    ).toEqual({ a: 1 });
+
+    expect(capturedRequest!.headers as Headers).not.toHaveProperty('x-stainless-retry-count');
+  });
+
+  test('overwrite retry count header', async () => {
+    let count = 0;
+    let capturedRequest: RequestInit | undefined;
+    const testFetch = async (url: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+      count++;
+      if (count <= 2) {
+        return new Response(undefined, {
+          status: 429,
+          headers: {
+            'Retry-After': '0.1',
+          },
+        });
+      }
+      capturedRequest = init;
+      return new Response(JSON.stringify({ a: 1 }), { headers: { 'Content-Type': 'application/json' } });
+    };
+    const client = new OpenAI({ apiKey: 'My API Key', fetch: testFetch, maxRetries: 4 });
+
+    expect(
+      await client.request({
+        path: '/foo',
+        method: 'get',
+        headers: { 'X-Stainless-Retry-Count': '42' },
+      }),
+    ).toEqual({ a: 1 });
+
+    expect((capturedRequest!.headers as Headers)['x-stainless-retry-count']).toBe('42');
+  });
+
   test('retry on 429 with retry-after', async () => {
     let count = 0;
     const testFetch = async (url: RequestInfo, { signal }: RequestInit = {}): Promise<Response> => {
@@ -293,5 +422,97 @@ describe('retries', () => {
         .then((r) => r.text()),
     ).toEqual(JSON.stringify({ a: 1 }));
     expect(count).toEqual(3);
+  });
+});
+
+describe('debug()', () => {
+  const env = process.env;
+  const spy = jest.spyOn(console, 'log');
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...env };
+    process.env['DEBUG'] = 'true';
+  });
+
+  afterEach(() => {
+    process.env = env;
+  });
+
+  test('body request object with Authorization header', function () {
+    // Test request body includes headers object with Authorization
+    const headersTest = {
+      headers: {
+        Authorization: 'fakeAuthorization',
+      },
+    };
+    debug('request', headersTest);
+    expect(spy).toHaveBeenCalledWith('OpenAI:DEBUG:request', {
+      headers: {
+        Authorization: 'REDACTED',
+      },
+    });
+  });
+
+  test('body request object with api-key header', function () {
+    // Test request body includes headers object with api-ley
+    const apiKeyTest = {
+      headers: {
+        'api-key': 'fakeKey',
+      },
+    };
+    debug('request', apiKeyTest);
+    expect(spy).toHaveBeenCalledWith('OpenAI:DEBUG:request', {
+      headers: {
+        'api-key': 'REDACTED',
+      },
+    });
+  });
+
+  test('header object with Authorization header', function () {
+    // Test headers object with authorization header
+    const authorizationTest = {
+      authorization: 'fakeValue',
+    };
+    debug('request', authorizationTest);
+    expect(spy).toHaveBeenCalledWith('OpenAI:DEBUG:request', {
+      authorization: 'REDACTED',
+    });
+  });
+
+  test('input args are not mutated', function () {
+    const authorizationTest = {
+      authorization: 'fakeValue',
+    };
+    const client = new OpenAI({
+      baseURL: 'http://localhost:5000/',
+      defaultHeaders: authorizationTest,
+      apiKey: 'api-key',
+    });
+
+    const { req } = client.buildRequest({ path: '/foo', method: 'post' });
+    debug('request', authorizationTest);
+    expect((req.headers as Headers)['authorization']).toEqual('fakeValue');
+    expect(spy).toHaveBeenCalledWith('OpenAI:DEBUG:request', {
+      authorization: 'REDACTED',
+    });
+  });
+
+  test('input headers are not mutated', function () {
+    const authorizationTest = {
+      authorization: 'fakeValue',
+    };
+    const client = new OpenAI({
+      baseURL: 'http://localhost:5000/',
+      defaultHeaders: authorizationTest,
+      apiKey: 'api-key',
+    });
+
+    const { req } = client.buildRequest({ path: '/foo', method: 'post' });
+    debug('request', { headers: req.headers });
+    expect((req.headers as Headers)['authorization']).toEqual('fakeValue');
+    expect(spy).toHaveBeenCalledWith('OpenAI:DEBUG:request', {
+      authorization: 'REDACTED',
+    });
   });
 });

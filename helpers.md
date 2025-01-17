@@ -1,6 +1,292 @@
-# Chat Completion Helpers
+# Structured Outputs Parsing Helpers
 
-## Streaming Responses
+The OpenAI API supports extracting JSON from the model with the `response_format` request param, for more details on the API, see [this guide](https://platform.openai.com/docs/guides/structured-outputs).
+
+The SDK provides a `client.beta.chat.completions.parse()` method which is a wrapper over the `client.chat.completions.create()` that
+provides richer integrations with TS specific types & returns a `ParsedChatCompletion` object, which is an extension of the standard `ChatCompletion` type.
+
+## Auto-parsing response content with Zod schemas
+
+You can pass zod schemas wrapped with `zodResponseFormat()` to the `.parse()` method and the SDK will automatically conver the model
+into a JSON schema, send it to the API and parse the response content back using the given zod schema.
+
+```ts
+import { zodResponseFormat } from 'openai/helpers/zod';
+import OpenAI from 'openai/index';
+import { z } from 'zod';
+
+const Step = z.object({
+  explanation: z.string(),
+  output: z.string(),
+});
+
+const MathResponse = z.object({
+  steps: z.array(Step),
+  final_answer: z.string(),
+});
+
+const client = new OpenAI();
+
+const completion = await client.beta.chat.completions.parse({
+  model: 'gpt-4o-2024-08-06',
+  messages: [
+    { role: 'system', content: 'You are a helpful math tutor.' },
+    { role: 'user', content: 'solve 8x + 31 = 2' },
+  ],
+  response_format: zodResponseFormat(MathResponse, 'math_response'),
+});
+
+console.dir(completion, { depth: 5 });
+
+const message = completion.choices[0]?.message;
+if (message?.parsed) {
+  console.log(message.parsed.steps);
+  console.log(`answer: ${message.parsed.final_answer}`);
+}
+```
+
+## Auto-parsing function tool calls
+
+The `.parse()` method will also automatically parse `function` tool calls if:
+
+- You use the `zodFunctionTool()` helper method
+- You mark your tool schema with `"strict": True`
+
+For example:
+
+```ts
+import { zodFunction } from 'openai/helpers/zod';
+import OpenAI from 'openai/index';
+import { z } from 'zod';
+
+const Table = z.enum(['orders', 'customers', 'products']);
+
+const Column = z.enum([
+  'id',
+  'status',
+  'expected_delivery_date',
+  'delivered_at',
+  'shipped_at',
+  'ordered_at',
+  'canceled_at',
+]);
+
+const Operator = z.enum(['=', '>', '<', '<=', '>=', '!=']);
+
+const OrderBy = z.enum(['asc', 'desc']);
+
+const DynamicValue = z.object({
+  column_name: z.string(),
+});
+
+const Condition = z.object({
+  column: z.string(),
+  operator: Operator,
+  value: z.union([z.string(), z.number(), DynamicValue]),
+});
+
+const Query = z.object({
+  table_name: Table,
+  columns: z.array(Column),
+  conditions: z.array(Condition),
+  order_by: OrderBy,
+});
+
+const client = new OpenAI();
+const completion = await client.beta.chat.completions.parse({
+  model: 'gpt-4o-2024-08-06',
+  messages: [
+    {
+      role: 'system',
+      content:
+        'You are a helpful assistant. The current date is August 6, 2024. You help users query for the data they are looking for by calling the query function.',
+    },
+    {
+      role: 'user',
+      content: 'look up all my orders in november of last year that were fulfilled but not delivered on time',
+    },
+  ],
+  tools: [zodFunction({ name: 'query', parameters: Query })],
+});
+console.dir(completion, { depth: 10 });
+
+const toolCall = completion.choices[0]?.message.tool_calls?.[0];
+if (toolCall) {
+  const args = toolCall.function.parsed_arguments as z.infer<typeof Query>;
+  console.log(args);
+  console.log(args.table_name);
+}
+
+main();
+```
+
+### Differences from `.create()`
+
+The `beta.chat.completions.parse()` method imposes some additional restrictions on it's usage that `chat.completions.create()` does not.
+
+- If the completion completes with `finish_reason` set to `length` or `content_filter`, the `LengthFinishReasonError` / `ContentFilterFinishReasonError` errors will be raised.
+- Only strict function tools can be passed, e.g. `{type: 'function', function: {..., strict: true}}`
+
+# Streaming Helpers
+
+OpenAI supports streaming responses when interacting with the [Chat](#chat-streaming) or [Assistant](#assistant-streaming-api) APIs.
+
+## Assistant Streaming API
+
+OpenAI supports streaming responses from Assistants. The SDK provides convenience wrappers around the API
+so you can subscribe to the types of events you are interested in as well as receive accumulated responses.
+
+More information can be found in the documentation: [Assistant Streaming](https://platform.openai.com/docs/assistants/overview?lang=node.js)
+
+#### An example of creating a run and subscribing to some events
+
+```ts
+const run = openai.beta.threads.runs
+  .stream(thread.id, {
+    assistant_id: assistant.id,
+  })
+  .on('textCreated', (text) => process.stdout.write('\nassistant > '))
+  .on('textDelta', (textDelta, snapshot) => process.stdout.write(textDelta.value))
+  .on('toolCallCreated', (toolCall) => process.stdout.write(`\nassistant > ${toolCall.type}\n\n`))
+  .on('toolCallDelta', (toolCallDelta, snapshot) => {
+    if (toolCallDelta.type === 'code_interpreter') {
+      if (toolCallDelta.code_interpreter.input) {
+        process.stdout.write(toolCallDelta.code_interpreter.input);
+      }
+      if (toolCallDelta.code_interpreter.outputs) {
+        process.stdout.write('\noutput >\n');
+        toolCallDelta.code_interpreter.outputs.forEach((output) => {
+          if (output.type === 'logs') {
+            process.stdout.write(`\n${output.logs}\n`);
+          }
+        });
+      }
+    }
+  });
+```
+
+### Starting a stream
+
+There are three helper methods for creating streams:
+
+```ts
+openai.beta.threads.runs.stream();
+```
+
+This method can be used to start and stream the response to an existing run with an associated thread
+that is already populated with messages.
+
+```ts
+openai.beta.threads.createAndRunStream();
+```
+
+This method can be used to add a message to a thread, start a run and then stream the response.
+
+```ts
+openai.beta.threads.runs.submitToolOutputsStream();
+```
+
+This method can be used to submit a tool output to a run waiting on the output and start a stream.
+
+### Assistant Events
+
+The assistant API provides events you can subscribe to for the following events.
+
+```ts
+.on('event', (event: AssistantStreamEvent) => ...)
+```
+
+This allows you to subscribe to all the possible raw events sent by the OpenAI streaming API.
+In many cases it will be more convenient to subscribe to a more specific set of events for your use case.
+
+More information on the types of events can be found here: [Events](https://platform.openai.com/docs/api-reference/assistants-streaming/events)
+
+```ts
+.on('runStepCreated', (runStep: RunStep) => ...)
+.on('runStepDelta', (delta: RunStepDelta, snapshot: RunStep) => ...)
+.on('runStepDone', (runStep: RunStep) => ...)
+```
+
+These events allow you to subscribe to the creation, delta and completion of a RunStep.
+
+For more information on how Runs and RunSteps work see the documentation [Runs and RunSteps](https://platform.openai.com/docs/assistants/how-it-works/runs-and-run-steps)
+
+```ts
+.on('messageCreated', (message: Message) => ...)
+.on('messageDelta', (delta: MessageDelta, snapshot: Message) => ...)
+.on('messageDone', (message: Message) => ...)
+```
+
+This allows you to subscribe to Message creation, delta and completion events. Messages can contain
+different types of content that can be sent from a model (and events are available for specific content types).
+For convenience, the delta event includes both the incremental update and an accumulated snapshot of the content.
+
+More information on messages can be found
+on in the documentation page [Message](https://platform.openai.com/docs/api-reference/messages/object).
+
+```ts
+.on('textCreated', (content: Text) => ...)
+.on('textDelta', (delta: RunStepDelta, snapshot: Text) => ...)
+.on('textDone', (content: Text, snapshot: Message) => ...)
+```
+
+These events allow you to subscribe to the creation, delta and completion of a Text content (a specific type of message).
+For convenience, the delta event includes both the incremental update and an accumulated snapshot of the content.
+
+```ts
+.on('imageFileDone', (content: ImageFile, snapshot: Message) => ...)
+```
+
+Image files are not sent incrementally so an event is provided for when a image file is available.
+
+```ts
+.on('toolCallCreated', (toolCall: ToolCall) => ...)
+.on('toolCallDelta', (delta: RunStepDelta, snapshot: ToolCall) => ...)
+.on('toolCallDone', (toolCall: ToolCall) => ...)
+```
+
+These events allow you to subscribe to events for the creation, delta and completion of a ToolCall.
+
+More information on tools can be found here [Tools](https://platform.openai.com/docs/assistants/tools)
+
+```ts
+.on('end', () => ...)
+```
+
+The last event send when a stream ends.
+
+### Assistant Methods
+
+The assistant streaming object also provides a few methods for convenience:
+
+```ts
+.currentEvent(): AssistantStreamEvent | undefined
+
+.currentRun(): Run | undefined
+
+.currentMessageSnapshot(): Message
+
+.currentRunStepSnapshot(): Runs.RunStep
+```
+
+These methods are provided to allow you to access additional context from within event handlers. In many cases
+the handlers should include all the information you need for processing, but if additional context is required it
+can be accessed.
+
+Note: There is not always a relevant context in certain situations (these will be `undefined` in those cases).
+
+```ts
+await .finalMessages() : Promise<Message[]>
+
+await .finalRunSteps(): Promise<RunStep[]>
+```
+
+These methods are provided for convenience to collect information at the end of a stream. Calling these events
+will trigger consumption of the stream until completion and then return the relevant accumulated objects.
+
+## Chat Streaming
+
+### Streaming Responses
 
 ```ts
 openai.chat.completions.stream({ stream?: false, … }, options?): ChatCompletionStreamingRunner
@@ -18,7 +304,7 @@ If you need to cancel a stream, you can `break` from a `for await` loop or call 
 
 See an example of streaming helpers in action in [`examples/stream.ts`](examples/stream.ts).
 
-## Automated Function Calls
+### Automated Function Calls
 
 ```ts
 openai.chat.completions.runTools({ stream: false, … }, options?): ChatCompletionRunner
@@ -69,9 +355,7 @@ See an example of automated function calls in action in
 
 Note, `runFunctions` was also previously available, but has been deprecated in favor of `runTools`.
 
-## Runner API
-
-### Events
+### Chat Events
 
 #### `.on('connect', () => …)`
 
@@ -109,6 +393,69 @@ The event fired when a function call is made by the assistant.
 
 The event fired when the function runner responds to the function call with `role: "function"`. The `content` of the
 response is given as the first argument to the callback.
+
+#### `.on('content.delta', (props: ContentDeltaEvent) => ...)`
+
+The event fired for every chunk containing new content. The `props` object contains:
+- `delta`: The new content string received in this chunk
+- `snapshot`: The accumulated content so far
+- `parsed`: The partially parsed content (if applicable)
+
+#### `.on('content.done', (props: ContentDoneEvent<ParsedT>) => ...)`
+
+The event fired when the content generation is complete. The `props` object contains:
+- `content`: The full generated content
+- `parsed`: The fully parsed content (if applicable)
+
+#### `.on('refusal.delta', (props: RefusalDeltaEvent) => ...)`
+
+The event fired when a chunk contains part of a content refusal. The `props` object contains:
+- `delta`: The new refusal content string received in this chunk
+- `snapshot`: The accumulated refusal content string so far
+
+#### `.on('refusal.done', (props: RefusalDoneEvent) => ...)`
+
+The event fired when the refusal content is complete. The `props` object contains:
+- `refusal`: The full refusal content
+
+#### `.on('tool_calls.function.arguments.delta', (props: FunctionToolCallArgumentsDeltaEvent) => ...)`
+
+The event fired when a chunk contains part of a function tool call's arguments. The `props` object contains:
+- `name`: The name of the function being called
+- `index`: The index of the tool call
+- `arguments`: The accumulated raw JSON string of arguments
+- `parsed_arguments`: The partially parsed arguments object
+- `arguments_delta`: The new JSON string fragment received in this chunk
+
+#### `.on('tool_calls.function.arguments.done', (props: FunctionToolCallArgumentsDoneEvent) => ...)`
+
+The event fired when a function tool call's arguments are complete. The `props` object contains:
+- `name`: The name of the function being called
+- `index`: The index of the tool call
+- `arguments`: The full raw JSON string of arguments
+- `parsed_arguments`: The fully parsed arguments object
+
+#### `.on('logprobs.content.delta', (props: LogProbsContentDeltaEvent) => ...)`
+
+The event fired when a chunk contains new content log probabilities. The `props` object contains:
+- `content`: A list of the new log probabilities received in this chunk
+- `snapshot`: A list of the accumulated log probabilities so far
+
+#### `.on('logprobs.content.done', (props: LogProbsContentDoneEvent) => ...)`
+
+The event fired when all content log probabilities have been received. The `props` object contains:
+- `content`: The full list of token log probabilities for the content
+
+#### `.on('logprobs.refusal.delta', (props: LogProbsRefusalDeltaEvent) => ...)`
+
+The event fired when a chunk contains new refusal log probabilities. The `props` object contains:
+- `refusal`: A list of the new log probabilities received in this chunk
+- `snapshot`: A list of the accumulated log probabilities so far
+
+#### `.on('logprobs.refusal.done', (props: LogProbsRefusalDoneEvent) => ...)`
+
+The event fired when all refusal log probabilities have been received. The `props` object contains:
+- `refusal`: The full list of token log probabilities for the refusal
 
 #### `.on('finalChatCompletion', (completion: ChatCompletion) => …)`
 
@@ -148,7 +495,7 @@ The event fired at the end, returning the total usage of the call.
 
 The last event fired in the stream.
 
-### Methods
+### Chat Methods
 
 #### `.abort()`
 
@@ -190,7 +537,7 @@ A promise which resolves with the last message with a `role: "function"`. Throws
 
 A promise which resolves with the total usage.
 
-### Fields
+### Chat Fields
 
 #### `.messages`
 
@@ -200,9 +547,9 @@ A mutable array of all messages in the conversation.
 
 The underlying `AbortController` for the runner.
 
-## Examples
+### Chat Examples
 
-### Abort on a function call
+#### Abort on a function call
 
 If you have a function call flow which you intend to _end_ with a certain function call, then you can use the second
 argument `runner` given to the function to either mutate `runner.messages` or call `runner.abort()`.
@@ -238,7 +585,7 @@ async function main() {
 main();
 ```
 
-### Integrate with `zod`
+#### Integrate with `zod`
 
 [`zod`](https://www.npmjs.com/package/zod) is a schema validation library which can help with validating the
 assistant's response to make sure it conforms to a schema. Paired with [`zod-to-json-schema`](https://www.npmjs.com/package/zod-to-json-schema), the validation schema also acts as the `parameters` JSON Schema passed to the API.
@@ -287,10 +634,31 @@ main();
 
 See a more fully-fledged example in [`examples/function-call-helpers-zod.ts`](examples/function-call-helpers-zod.ts).
 
-### Integrate with Next.JS
+#### Integrate with Next.JS
 
 See an example of a Next.JS integration here [`examples/stream-to-client-next.ts`](examples/stream-to-client-next.ts).
 
-### Proxy Streaming to a Browser
+#### Proxy Streaming to a Browser
 
 See an example of using express to stream to a browser here [`examples/stream-to-client-express.ts`](examples/stream-to-client-express.ts).
+
+# Polling Helpers
+
+When interacting with the API some actions such as starting a Run and adding files to vector stores are asynchronous and take time to complete.
+The SDK includes helper functions which will poll the status until it reaches a terminal state and then return the resulting object.
+If an API method results in an action which could benefit from polling there will be a corresponding version of the
+method ending in `_AndPoll`.
+
+All methods also allow you to set the polling frequency, how often the API is checked for an update, via a function argument (`pollIntervalMs`).
+
+The polling methods are:
+
+```ts
+client.beta.threads.createAndRunPoll(...)
+client.beta.threads.runs.createAndPoll((...)
+client.beta.threads.runs.submitToolOutputsAndPoll((...)
+client.beta.vectorStores.files.uploadAndPoll((...)
+client.beta.vectorStores.files.createAndPoll((...)
+client.beta.vectorStores.fileBatches.createAndPoll((...)
+client.beta.vectorStores.fileBatches.uploadAndPoll((...)
+```
